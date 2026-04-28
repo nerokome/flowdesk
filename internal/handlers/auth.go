@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"time"
+
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
@@ -63,8 +64,6 @@ func Register(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 
-		// 4. TRIGGER EMAIL SERVICE
-		// We call the SendOTP function from your services package
 		err := services.SendOTP(user.Email, otp)
 		if err != nil {
 			fmt.Printf("Failed to send email to %s: %v\n", user.Email, err)
@@ -128,13 +127,11 @@ func VerifyOTP(db *gorm.DB) gin.HandlerFunc {
 		}
 
 		var user models.User
-		// 2. Find the user
 		if err := db.Where("email = ?", input.Email).First(&user).Error; err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 			return
 		}
 
-		
 		if user.IsVerified {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Account already verified"})
 			return
