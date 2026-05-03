@@ -1,39 +1,52 @@
 package main
 
 import (
-    "log"
-    "net/http"
-    "os"
-    "flowdesk/internal/repository"
-    "flowdesk/internal/routes" 
-    "github.com/gin-gonic/gin" 
-    "github.com/joho/godotenv"
+	"flag"                     
+	"flowdesk/internal/models" 
+	"flowdesk/internal/repository"
+	"flowdesk/internal/routes"
+	"log"
+	"net/http"
+	"os"
+
+	"github.com/gin-gonic/gin"
+	"github.com/joho/godotenv"
 )
 
 func main() {
-    godotenv.Load()
+	godotenv.Load()
 
-    db := repository.ConnectDB()
-    sqlDB, _ := db.DB()
-    if err := sqlDB.Ping(); err != nil {
-        log.Fatal("DB Ping Failed")
-    }
-    log.Println("🚀 Database Connected!")
+	resetDB := flag.Bool("reset", false, "Reset the database")
+	flag.Parse()
 
-    r := gin.Default()
+	db := repository.ConnectDB()
 
-    // 2. Load the routes here
-    routes.SetupRoutes(r, db)
+	if *resetDB {
+		log.Println("⚠️  Resetting database...")
+		db.Migrator().DropTable(&models.User{})
+		db.AutoMigrate(&models.User{})
+		log.Println("✅ Database reset complete. Exiting...")
+		return // Stop here so it doesn't start the server
+	}
 
-    r.GET("/ping", func(c *gin.Context) {
-        c.JSON(http.StatusOK, gin.H{"message": "Flowdesk Server is running!"})
-    })
+	sqlDB, _ := db.DB()
+	if err := sqlDB.Ping(); err != nil {
+		log.Fatal("DB Ping Failed")
+	}
+	log.Println("🚀 Database Connected!")
 
-    port := os.Getenv("PORT")
-    if port == "" {
-        port = "8080"
-    }
+	r := gin.Default()
+	routes.SetupRoutes(r, db)
 
-    log.Printf("🔥 Server starting on port %s", port)
-    r.Run(":" + port)
+	r.GET("/ping", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"message": "Flowdesk Server is running!"})
+	})
+
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	log.Printf("🔥 Server starting on port %s", port)
+	r.Run(":" + port)
 }

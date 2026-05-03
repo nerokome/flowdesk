@@ -2,9 +2,9 @@ package handlers
 
 import (
 	"crypto/rand"
+	"flowdesk/internal/auth"
 	"flowdesk/internal/models"
 	"flowdesk/internal/services"
-	"fmt"
 	"io"
 	"net/http"
 	"time"
@@ -14,12 +14,14 @@ import (
 	"gorm.io/gorm"
 )
 
+var table = [...]byte{'1', '2', '3', '4', '5', '6', '7', '8', '9', '0'}
+
 func generateOTP() string {
 	max := 6
 	b := make([]byte, max)
 	n, err := io.ReadAtLeast(rand.Reader, b, max)
 	if n != max || err != nil {
-		return "123456"
+		return "123456" 
 	}
 	for i := 0; i < len(b); i++ {
 		b[i] = table[int(b[i])%len(table)]
@@ -27,25 +29,22 @@ func generateOTP() string {
 	return string(b)
 }
 
-var table = [...]byte{'1', '2', '3', '4', '5', '6', '7', '8', '9', '0'}
-
+// Register - Matches image_8.png (Step 1)
 func Register(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var input struct {
 			Name     string `json:"name" binding:"required"`
 			Email    string `json:"email" binding:"required"`
 			Password string `json:"password" binding:"required"`
+			Role     string `json:"role" binding:"required"` 
 		}
 
 		if err := c.ShouldBindJSON(&input); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Please fill all fields correctly"})
 			return
 		}
 
-		// 1. Hash Password
 		hashedPassword, _ := bcrypt.GenerateFromPassword([]byte(input.Password), 12)
-
-		// 2. Generate OTP
 		otp := generateOTP()
 		expiry := time.Now().Add(15 * time.Minute)
 
@@ -53,66 +52,25 @@ func Register(db *gorm.DB) gin.HandlerFunc {
 			Name:             input.Name,
 			Email:            input.Email,
 			Password:         string(hashedPassword),
+			Role:             input.Role,
 			VerificationCode: otp,
 			OTPExpiresAt:     expiry,
-			IsVerified:       false,
 		}
 
-		// 3. Save to DB
 		if err := db.Create(&user).Error; err != nil {
-			c.JSON(http.StatusConflict, gin.H{"error": "Email already exists"})
+			c.JSON(http.StatusConflict, gin.H{"error": "This email is already registered"})
 			return
 		}
-
-		err := services.SendOTP(user.Email, otp)
-		if err != nil {
-			fmt.Printf("Failed to send email to %s: %v\n", user.Email, err)
-		}
+		go services.SendOTP(user.Email, otp)
 
 		c.JSON(http.StatusCreated, gin.H{
-			"message": "Registration successful. Please verify your email.",
-			"otp":     otp,
+			"message": "Step 1 complete. Verification code sent.",
+			"user_id": user.ID,
 		})
 	}
 }
-func Login(db *gorm.DB, jwtSecret string) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		var input struct {
-			Email    string `json:"email" binding:"required"`
-			Password string `json:"password" binding:"required"`
-		}
-		if err := c.ShouldBindJSON(&input); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Email and password required"})
-			return
-		}
 
-		var user models.User
-		if err := db.Where("email = ?", input.Email).First(&user).Error; err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid email or password"})
-			return
-		}
-		if !user.IsVerified {
-			c.JSON(http.StatusForbidden, gin.H{
-				"error":    "Please verify your email before logging in",
-				"verified": false,
-			})
-			return
-		}
-		err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(input.Password))
-		if err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid email or password"})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{
-			"message": "Login successful",
-			"user": gin.H{
-				"id":    user.ID,
-				"name":  user.Name,
-				"email": user.Email,
-			},
-		})
-	}
-}
+// VerifyOTP - Matches image_9.png (Step 2)
 func VerifyOTP(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var input struct {
@@ -120,7 +78,6 @@ func VerifyOTP(db *gorm.DB) gin.HandlerFunc {
 			Code  string `json:"code" binding:"required"`
 		}
 
-		// 1. Validate Input
 		if err := c.ShouldBindJSON(&input); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Email and Code are required"})
 			return
@@ -137,23 +94,73 @@ func VerifyOTP(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 
-		// 4. Check if OTP is expired
 		if time.Now().After(user.OTPExpiresAt) {
-			c.JSON(http.StatusGone, gin.H{"error": "OTP has expired. Please request a new one."})
+			c.JSON(http.StatusGone, gin.H{"error": "OTP expired"})
 			return
 		}
 
 		if user.VerificationCode != input.Code {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid verification code"})
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid code"})
 			return
 		}
 
-		// 6. Success! Update the user in the DB
 		db.Model(&user).Updates(map[string]interface{}{
 			"is_verified":       true,
 			"verification_code": "",
 		})
 
-		c.JSON(http.StatusOK, gin.H{"message": "Email verified successfully! You can now log in."})
+		c.JSON(http.StatusOK, gin.H{"message": "Verified! Proceed to team setup."})
+	}
+}
+
+func Login(db *gorm.DB, jwtSecret string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var input struct {
+			Email    string `json:"email" binding:"required"`
+			Password string `json:"password" binding:"required"`
+		}
+
+		if err := c.ShouldBindJSON(&input); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Credentials required"})
+			return
+		}
+
+		var user models.User
+		if err := db.Where("email = ?", input.Email).First(&user).Error; err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+			return
+		}
+
+		// Block unverified users to respect the flow in image_9.png
+		if !user.IsVerified {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error":    "Please verify your email before logging in",
+				"verified": false,
+			})
+			return
+		}
+
+		if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(input.Password)); err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+			return
+		}
+
+		tokenString, err := auth.GenerateToken(user.ID.String(), user.Role, jwtSecret)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not generate token"})
+			return
+		}
+		// --- JWT GENERATION END ---
+
+		c.JSON(http.StatusOK, gin.H{
+			"message": "Login successful",
+			"token":   tokenString, // Return the token to the client
+			"user": gin.H{
+				"id":    user.ID,
+				"name":  user.Name,
+				"role":  user.Role,
+				"email": user.Email,
+			},
+		})
 	}
 }

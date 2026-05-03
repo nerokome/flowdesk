@@ -23,11 +23,17 @@ func ConnectDB() *gorm.DB {
 
 	log.Println("Connected to PostgreSQL! 🚀")
 
-	
-	err = db.AutoMigrate(&models.User{})
+	// Ensure these match the exact names in your internal/models/models.go file
+	err = db.AutoMigrate(
+		&models.User{},
+		&models.MemberCheckIn{},
+		&models.TeamAnalytics{},
+	)
+
 	if err != nil {
 		log.Fatal("Migration Failed: ", err)
 	}
+
 	log.Println("Database Migration Completed! ✅")
 
 	return db
